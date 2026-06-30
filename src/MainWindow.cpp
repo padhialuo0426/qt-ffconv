@@ -10,7 +10,10 @@
 #include <QLibraryInfo>
 
 // 顶部信息常量
-static const QString kAppVersion   = "0.1";
+#ifndef APP_VERSION
+#define APP_VERSION "0.0"
+#endif
+static const QString kAppVersion   = APP_VERSION;
 static const QString kRepoUrl      = "https://github.com/padhialuo0426/qt-ffconv";
 static const QString kFfmpegDocUrl = "https://ffmpeg.org/documentation.html";
 

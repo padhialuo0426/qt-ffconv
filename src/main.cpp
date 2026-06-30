@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
     // 其它语言加载内嵌的 .qm，并加载 Qt 自带翻译让标准按钮一致。
     QTranslator appTr, qtTr;
     if (lang != "zh_CN") {
-        if (appTr.load(":/i18n/qt-ffconv_" + lang))
+        if (appTr.load(":/i18n/ffconv_" + lang))
             app.installTranslator(&appTr);
     } else {
         if (qtTr.load("qtbase_zh_CN",

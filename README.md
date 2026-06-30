@@ -46,7 +46,7 @@ cmake --build --preset debug
 ## 运行
 
 ```bash
-./build/debug/qt-ffconv      # 或 build/release/qt-ffconv
+./build/debug/ffconv      # 或 build/release/ffconv
 ```
 
 二进制已嵌入 Qt 库的 RPATH，无需额外设置环境变量。
@@ -60,11 +60,11 @@ cmake --build --preset debug
 | `src/TranscodeJob.h` | 单个转码任务的数据结构与状态 |
 | `src/FfmpegProcess.{h,cpp}` | QProcess 封装：ffprobe 取时长、ffmpeg 转码、`-progress` 进度解析 |
 | `src/MainWindow.{h,cpp}` | 主界面：菜单栏、队列、参数面板、能力检测对话框、日志 |
-| `translations/qt-ffconv_en.ts` | 英文翻译源（`lrelease` 后内嵌为 `:/i18n` 资源） |
+| `translations/ffconv_en.ts` | 英文翻译源（`lrelease` 后内嵌为 `:/i18n` 资源） |
 
 ## 国际化
 
-界面字符串均包裹在 `tr()` 中，英文翻译位于 `translations/qt-ffconv_en.ts`。
+界面字符串均包裹在 `tr()` 中，英文翻译位于 `translations/ffconv_en.ts`。
 构建时由 `qt_add_translations` 自动 `lrelease` 成 `.qm` 并内嵌进程序。
 新增/修改界面文案后，运行 `cmake --build build/debug --target update_translations`
 即可用 `lupdate` 刷新 `.ts`，再补译。
