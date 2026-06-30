@@ -12,7 +12,11 @@
   - 音频：直接复制 / AAC / Opus（可设码率）
   - 输出容器：mp4 / mkv / mov / webm（HEVC 进 mp4/mov 自动加 `hvc1` 标签）
   - 输出目录（留空 = 与源文件同目录；自动避免覆盖源文件）
+- **队列勾选**：每行带复选框，仅勾选的视频参与转码；支持「全选/全不选/反选」、鼠标框选 + 空格批量勾选。转码完成后自动取消勾选，重新勾选即可换格式重转。
 - **本机编解码能力检测**：「检测本机编解码能力…」按钮，弹窗显示 ffmpeg 版本、过滤出的硬件编/解码器，以及全部编码器 / 解码器列表。窗口底部状态栏常驻显示 ffmpeg 版本。
+- **顶部菜单**：文件 / 设置 / 帮助。
+  - 设置 → 语言：**简体中文 / English**（基于 Qt Linguist，切换后重启生效，默认中文）。
+  - 帮助：使用说明、FFmpeg 官方文档、项目仓库、开源许可、关于。
 - **实时日志**与**取消**。
 
 ## 依赖
@@ -55,4 +59,18 @@ cmake --build --preset debug
 | `src/EncodeSettings.{h,cpp}` | 编码参数 → ffmpeg 命令行参数的映射 |
 | `src/TranscodeJob.h` | 单个转码任务的数据结构与状态 |
 | `src/FfmpegProcess.{h,cpp}` | QProcess 封装：ffprobe 取时长、ffmpeg 转码、`-progress` 进度解析 |
-| `src/MainWindow.{h,cpp}` | 主界面：队列、参数面板、能力检测对话框、日志 |
+| `src/MainWindow.{h,cpp}` | 主界面：菜单栏、队列、参数面板、能力检测对话框、日志 |
+| `translations/ffmpeg-qt6_en.ts` | 英文翻译源（`lrelease` 后内嵌为 `:/i18n` 资源） |
+
+## 国际化
+
+界面字符串均包裹在 `tr()` 中，英文翻译位于 `translations/ffmpeg-qt6_en.ts`。
+构建时由 `qt_add_translations` 自动 `lrelease` 成 `.qm` 并内嵌进程序。
+新增/修改界面文案后，运行 `cmake --build build/debug --target update_translations`
+即可用 `lupdate` 刷新 `.ts`，再补译。
+
+## 许可证
+
+本项目以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与本机所用的 FFmpeg
+（`--enable-gpl --enable-version3` 构建，含 x264/x265 等 GPL 组件）保持一致。
+本程序通过外部进程调用系统 FFmpeg，FFmpeg 及其编解码库遵循各自许可证。

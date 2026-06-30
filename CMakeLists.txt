@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets LinguistTools)
 
 add_executable(ffmpeg-qt6
     src/main.cpp
@@ -17,3 +17,9 @@ add_executable(ffmpeg-qt6
 )
 
 target_link_libraries(ffmpeg-qt6 PRIVATE Qt6::Widgets)
+
+# 国际化：生成/更新 .ts（update_translations 目标），构建时 lrelease 成 .qm 并内嵌到 :/i18n
+qt_add_translations(ffmpeg-qt6
+    TS_FILES translations/ffmpeg-qt6_en.ts
+    RESOURCE_PREFIX "/i18n"
+)

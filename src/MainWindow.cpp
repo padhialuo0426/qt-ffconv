@@ -4,6 +4,15 @@
 #include <QtWidgets>
 #include <QProcess>
 #include <QKeyEvent>
+#include <QDesktopServices>
+#include <QSettings>
+#include <QUrl>
+#include <QLibraryInfo>
+
+// 顶部信息常量
+static const QString kAppVersion   = "0.1";
+static const QString kRepoUrl      = "https://github.com/your-name/ffmpeg-qt6"; // TODO: 建远程后替换
+static const QString kFfmpegDocUrl = "https://ffmpeg.org/documentation.html";
 
 // ---- 小工具：同步执行命令并返回 stdout ----
 static QString runCapture(const QString &prog, const QStringList &args, int timeoutMs = 8000)
@@ -83,7 +92,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     queueBtns->addWidget(m_checkNoneBtn);
     queueBtns->addWidget(m_invertBtn);
 
-    auto *queueBox = new QGroupBox(tr("转码队列（拖拽文件到此；勾选要转码的视频，框选+空格可批量勾选）"));
+    auto *queueBox = new QGroupBox(tr("转码队列"));
     auto *queueLay = new QVBoxLayout(queueBox);
     queueLay->addWidget(m_table);
     queueLay->addLayout(queueBtns);
@@ -195,6 +204,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     setCentralWidget(central);
 
     statusBar()->addWidget(m_ffmpegLabel);
+
+    createMenus();
 }
 
 // ---------- 拖拽 ----------
@@ -302,7 +313,7 @@ void MainWindow::startQueue()
 
     if (m_runRows.isEmpty()) {
         QMessageBox::information(this, tr("提示"),
-                                tr("请先勾选要转码的视频（可用「全选」或框选+空格）。"));
+                                tr("请先勾选要转码的视频"));
         return;
     }
 
@@ -505,4 +516,95 @@ void MainWindow::showCapabilities()
     lay->addLayout(btnLay);
 
     dlg.exec();
+}
+
+// ---------- 顶部菜单 ----------
+void MainWindow::createMenus()
+{
+    // 文件
+    QMenu *fileMenu = menuBar()->addMenu(tr("文件(&F)"));
+    fileMenu->addAction(tr("添加文件…"), this, &MainWindow::addFiles);
+    fileMenu->addAction(tr("清空队列"), this, &MainWindow::clearQueue);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("退出"), this, &QWidget::close);
+
+    // 设置 → 语言
+    QMenu *settingsMenu = menuBar()->addMenu(tr("设置(&S)"));
+    QMenu *langMenu = settingsMenu->addMenu(tr("语言"));
+
+    QSettings settings;
+    const QString cur = settings.value("language", "zh_CN").toString();
+
+    auto *langGroup = new QActionGroup(this);
+    langGroup->setExclusive(true);
+    struct { QString name; QString code; } langs[] = {
+        { tr("简体中文"), "zh_CN" },
+        { "English",     "en"    },
+    };
+    for (const auto &l : langs) {
+        QAction *act = langMenu->addAction(l.name);
+        act->setCheckable(true);
+        act->setChecked(cur == l.code);
+        const QString code = l.code;
+        connect(act, &QAction::triggered, this, [this, code] { changeLanguage(code); });
+        langGroup->addAction(act);
+    }
+
+    // 帮助
+    QMenu *helpMenu = menuBar()->addMenu(tr("帮助(&H)"));
+    helpMenu->addAction(tr("使用说明"), this, &MainWindow::showUsage);
+    helpMenu->addSeparator();
+    helpMenu->addAction(tr("FFmpeg 官方文档"), this, [] {
+        QDesktopServices::openUrl(QUrl(kFfmpegDocUrl));
+    });
+    helpMenu->addAction(tr("项目仓库"), this, [] {
+        QDesktopServices::openUrl(QUrl(kRepoUrl));
+    });
+    helpMenu->addAction(tr("开源许可"), this, &MainWindow::showLicense);
+    helpMenu->addSeparator();
+    helpMenu->addAction(tr("关于"), this, &MainWindow::showAbout);
+}
+
+void MainWindow::changeLanguage(const QString &code)
+{
+    QSettings settings;
+    if (settings.value("language", "zh_CN").toString() == code)
+        return;   // 未变化
+    settings.setValue("language", code);
+    QMessageBox::information(this, tr("语言"),
+                             tr("语言已切换，重启程序后生效。"));
+}
+
+void MainWindow::showUsage()
+{
+    QMessageBox::information(this, tr("使用说明"),
+        tr("1. 通过「添加文件」或直接拖拽，把视频加入队列。\n"
+           "2. 在列表中勾选要转码的视频（可用「全选」，或鼠标框选后按空格批量勾选）。\n"
+           "3. 在右侧选择视频编码、加速后端、质量、音频与输出格式。\n"
+           "4. 点击「开始转码」，仅勾选的视频会被处理。\n"
+           "5. 转码完成的视频会自动取消勾选；若想换个格式重转，重新勾选它即可。"));
+}
+
+void MainWindow::showLicense()
+{
+    QMessageBox::about(this, tr("开源许可"),
+        tr("本程序以 GNU 通用公共许可证 v3 或更新版本（GPL-3.0-or-later）发布，"
+           "与本机所用的 FFmpeg（启用 GPL 组件构建）保持一致。\n\n"
+           "本程序通过外部进程调用系统中的 FFmpeg，FFmpeg 及其各编解码库"
+           "遵循各自的许可证。\n\n"
+           "完整许可证见随附的 LICENSE 文件。"));
+}
+
+void MainWindow::showAbout()
+{
+    const QString ffver = runCapture(m_ffmpegPath, {"-hide_banner", "-version"})
+                              .section('\n', 0, 0);
+    QMessageBox::about(this, tr("关于"),
+        tr("<h3>FFmpeg 转码器</h3>"
+           "<p>版本 %1</p>"
+           "<p>一个基于 Qt %2 的本机视频转码前端，通过调用系统 FFmpeg 完成转码。</p>"
+           "<p>%3</p>"
+           "<p>许可证：GPL-3.0-or-later</p>")
+            .arg(kAppVersion, QT_VERSION_STR,
+                 ffver.isEmpty() ? tr("未检测到 FFmpeg") : ffver.toHtmlEscaped()));
 }

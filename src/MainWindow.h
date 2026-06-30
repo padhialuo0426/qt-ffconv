@@ -34,8 +34,13 @@ private slots:
     void checkAll();
     void checkNone();
     void invertCheck();
+    void changeLanguage(const QString &code);
+    void showUsage();
+    void showLicense();
+    void showAbout();
 
 private:
+    void  createMenus();
     void  addPath(const QString &path);
     EncodeSettings currentSettings() const;
     QString buildOutputPath(const QString &input, const EncodeSettings &s) const;
