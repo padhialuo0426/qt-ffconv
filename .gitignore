@@ -19,3 +19,7 @@ qrc_*.cpp
 
 # 测试视频（不纳入版本库）
 /samples/
+
+# 分发打包产物
+/dist/
+/tools/
