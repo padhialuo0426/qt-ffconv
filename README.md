@@ -24,17 +24,25 @@
 
 ## 构建
 
+### CLion（推荐）
+
+直接用 CLion 打开本项目目录，它会自动识别仓库中的 `CMakePresets.json`，
+在 *Settings → Build → CMake* 里启用 **Debug** / **Release** 两个预设即可，
+Qt 路径与 Ninja 生成器都已在预设里配好，无需额外设置。
+
+### 命令行
+
 ```bash
-./build.sh
-# 或手动：
-cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$HOME/Qt/6.11.1/gcc_64"
-cmake --build build
+cmake --preset debug      # 或 release
+cmake --build --preset debug
 ```
+
+可用预设：`debug`（输出到 `build/debug`）、`release`（输出到 `build/release`）。
 
 ## 运行
 
 ```bash
-./build/ffmpeg-qt6
+./build/debug/ffmpeg-qt6      # 或 build/release/ffmpeg-qt6
 ```
 
 二进制已嵌入 Qt 库的 RPATH，无需额外设置环境变量。
