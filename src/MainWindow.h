@@ -21,6 +21,7 @@ public:
 protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
+    bool eventFilter(QObject *obj, QEvent *ev) override;
 
 private slots:
     void addFiles();
@@ -30,6 +31,9 @@ private slots:
     void startQueue();
     void cancelQueue();
     void showCapabilities();
+    void checkAll();
+    void checkNone();
+    void invertCheck();
 
 private:
     void  addPath(const QString &path);
@@ -39,12 +43,18 @@ private:
     void  setRowStatus(int row, JobStatus st);
     void  appendLog(const QString &line);
     void  setUiRunning(bool running);
+    bool  isRowChecked(int row) const;
+    void  setRowChecked(int row, bool checked);
+    QList<int> selectedRows() const;
 
     // 队列
     QTableWidget   *m_table = nullptr;
     QPushButton    *m_addBtn = nullptr;
     QPushButton    *m_removeBtn = nullptr;
     QPushButton    *m_clearBtn = nullptr;
+    QPushButton    *m_checkAllBtn = nullptr;
+    QPushButton    *m_checkNoneBtn = nullptr;
+    QPushButton    *m_invertBtn = nullptr;
 
     // 参数面板
     QComboBox      *m_codecCombo = nullptr;
@@ -64,6 +74,7 @@ private:
 
     // 运行状态
     QVector<TranscodeJob> m_jobs;
+    QList<int>     m_runRows;        // 本次运行勾选的行
     int            m_currentIndex = -1;
     FfmpegProcess *m_runner = nullptr;
     QString        m_ffmpegPath = "ffmpeg";

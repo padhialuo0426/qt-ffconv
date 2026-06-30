@@ -3,6 +3,7 @@
 
 #include <QtWidgets>
 #include <QProcess>
+#include <QKeyEvent>
 
 // ---- 小工具：同步执行命令并返回 stdout ----
 static QString runCapture(const QString &prog, const QStringList &args, int timeoutMs = 8000)
@@ -30,17 +31,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             if (auto *it = m_table->item(m_currentIndex, 2))
                 it->setText(QString::number(pct) + "%");
         }
-        // 整体进度 = (已完成任务 + 当前任务比例) / 总数
+        // 整体进度 = (本次已完成 + 当前任务比例) / 本次勾选总数
         int done = 0;
-        for (const auto &j : m_jobs)
-            if (j.status == JobStatus::Done) ++done;
-        double overall = m_jobs.isEmpty() ? 0
-            : (done * 100.0 + pct) / m_jobs.size();
+        for (int r : m_runRows)
+            if (r >= 0 && r < m_jobs.size() && m_jobs[r].status == JobStatus::Done)
+                ++done;
+        double overall = m_runRows.isEmpty() ? 0
+            : (done * 100.0 + pct) / m_runRows.size();
         m_overallBar->setValue(int(overall));
     });
     connect(m_runner, &FfmpegProcess::finished, this, [this](bool ok) {
-        if (m_currentIndex >= 0)
+        if (m_currentIndex >= 0) {
             setRowStatus(m_currentIndex, ok ? JobStatus::Done : JobStatus::Failed);
+            // 转码成功后自动取消勾选：避免再次"开始"时被重复转码；
+            // 若选错格式想重转，重新勾选该视频即可。
+            if (ok)
+                setRowChecked(m_currentIndex, false);
+        }
         runNext();
     });
 
@@ -49,7 +56,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_table->setHorizontalHeaderLabels({tr("文件"), tr("状态"), tr("进度")});
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection); // 支持鼠标框选/Ctrl/Shift
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->installEventFilter(this);  // 拦截空格键：批量勾选选中行
 
     m_addBtn    = new QPushButton(tr("添加文件…"));
     m_removeBtn = new QPushButton(tr("移除"));
@@ -58,13 +67,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_removeBtn, &QPushButton::clicked, this, &MainWindow::removeSelected);
     connect(m_clearBtn,  &QPushButton::clicked, this, &MainWindow::clearQueue);
 
+    m_checkAllBtn  = new QPushButton(tr("全选"));
+    m_checkNoneBtn = new QPushButton(tr("全不选"));
+    m_invertBtn    = new QPushButton(tr("反选"));
+    connect(m_checkAllBtn,  &QPushButton::clicked, this, &MainWindow::checkAll);
+    connect(m_checkNoneBtn, &QPushButton::clicked, this, &MainWindow::checkNone);
+    connect(m_invertBtn,    &QPushButton::clicked, this, &MainWindow::invertCheck);
+
     auto *queueBtns = new QHBoxLayout;
     queueBtns->addWidget(m_addBtn);
     queueBtns->addWidget(m_removeBtn);
     queueBtns->addWidget(m_clearBtn);
     queueBtns->addStretch();
+    queueBtns->addWidget(m_checkAllBtn);
+    queueBtns->addWidget(m_checkNoneBtn);
+    queueBtns->addWidget(m_invertBtn);
 
-    auto *queueBox = new QGroupBox(tr("转码队列（可拖拽文件到此）"));
+    auto *queueBox = new QGroupBox(tr("转码队列（拖拽文件到此；勾选要转码的视频，框选+空格可批量勾选）"));
     auto *queueLay = new QVBoxLayout(queueBox);
     queueLay->addWidget(m_table);
     queueLay->addLayout(queueBtns);
@@ -210,8 +229,11 @@ void MainWindow::addPath(const QString &path)
 
     const int row = m_table->rowCount();
     m_table->insertRow(row);
-    m_table->setItem(row, 0, new QTableWidgetItem(QFileInfo(path).fileName()));
-    m_table->item(row, 0)->setToolTip(path);
+    auto *fileItem = new QTableWidgetItem(QFileInfo(path).fileName());
+    fileItem->setFlags(fileItem->flags() | Qt::ItemIsUserCheckable);
+    fileItem->setCheckState(Qt::Checked);   // 默认勾选，方便"添加即转码"
+    fileItem->setToolTip(path);
+    m_table->setItem(row, 0, fileItem);
     m_table->setItem(row, 1, new QTableWidgetItem(tr("等待")));
     m_table->setItem(row, 2, new QTableWidgetItem("0%"));
 }
@@ -219,9 +241,7 @@ void MainWindow::addPath(const QString &path)
 void MainWindow::removeSelected()
 {
     if (m_runner->isRunning()) return;
-    QList<int> rows;
-    for (const QModelIndex &it : m_table->selectionModel()->selectedRows())
-        rows << it.row();
+    QList<int> rows = selectedRows();
     std::sort(rows.begin(), rows.end(), std::greater<int>());
     for (int r : rows) {
         m_table->removeRow(r);
@@ -271,16 +291,29 @@ QString MainWindow::buildOutputPath(const QString &input, const EncodeSettings &
 // ---------- 运行队列 ----------
 void MainWindow::startQueue()
 {
-    if (m_jobs.isEmpty() || m_runner->isRunning())
+    if (m_runner->isRunning())
         return;
 
+    // 只转码被勾选的视频（含此前已完成、重新勾选想换格式重转的）
+    m_runRows.clear();
+    for (int i = 0; i < m_jobs.size(); ++i)
+        if (isRowChecked(i))
+            m_runRows << i;
+
+    if (m_runRows.isEmpty()) {
+        QMessageBox::information(this, tr("提示"),
+                                tr("请先勾选要转码的视频（可用「全选」或框选+空格）。"));
+        return;
+    }
+
     const EncodeSettings s = currentSettings();
-    for (int i = 0; i < m_jobs.size(); ++i) {
-        if (m_jobs[i].status == JobStatus::Done) continue;
+    for (int i : m_runRows) {
         m_jobs[i].settings = s;
         m_jobs[i].outputPath = buildOutputPath(m_jobs[i].inputPath, s);
+        m_jobs[i].progress = 0;
         m_jobs[i].status = JobStatus::Pending;
         setRowStatus(i, JobStatus::Pending);
+        if (auto *it = m_table->item(i, 2)) it->setText("0%");
     }
     m_overallBar->setValue(0);
     setUiRunning(true);
@@ -349,6 +382,66 @@ void MainWindow::setUiRunning(bool running)
     m_addBtn->setEnabled(!running);
     m_removeBtn->setEnabled(!running);
     m_clearBtn->setEnabled(!running);
+}
+
+// ---------- 勾选（候选框） ----------
+bool MainWindow::isRowChecked(int row) const
+{
+    auto *it = m_table->item(row, 0);
+    return it && it->checkState() == Qt::Checked;
+}
+
+void MainWindow::setRowChecked(int row, bool checked)
+{
+    if (auto *it = m_table->item(row, 0))
+        it->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+}
+
+QList<int> MainWindow::selectedRows() const
+{
+    QList<int> rows;
+    for (const QModelIndex &it : m_table->selectionModel()->selectedRows())
+        rows << it.row();
+    return rows;
+}
+
+void MainWindow::checkAll()
+{
+    for (int i = 0; i < m_table->rowCount(); ++i)
+        setRowChecked(i, true);
+}
+
+void MainWindow::checkNone()
+{
+    for (int i = 0; i < m_table->rowCount(); ++i)
+        setRowChecked(i, false);
+}
+
+void MainWindow::invertCheck()
+{
+    for (int i = 0; i < m_table->rowCount(); ++i)
+        setRowChecked(i, !isRowChecked(i));
+}
+
+// 空格键：把当前选中的行批量勾选/取消（框选后一起选择）
+bool MainWindow::eventFilter(QObject *obj, QEvent *ev)
+{
+    if (obj == m_table && ev->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(ev);
+        if (ke->key() == Qt::Key_Space) {
+            const QList<int> rows = selectedRows();
+            if (!rows.isEmpty()) {
+                // 只要有未勾选的就全部勾上，否则全部取消
+                bool anyUnchecked = false;
+                for (int r : rows)
+                    if (!isRowChecked(r)) { anyUnchecked = true; break; }
+                for (int r : rows)
+                    setRowChecked(r, anyUnchecked);
+                return true;  // 消费事件，避免默认只切换当前单元格
+            }
+        }
+    }
+    return QMainWindow::eventFilter(obj, ev);
 }
 
 // ---------- 本机编解码能力检测 ----------
