@@ -11,7 +11,7 @@
 
 // 顶部信息常量
 static const QString kAppVersion   = "0.1";
-static const QString kRepoUrl      = "https://github.com/your-name/qt-ffconv"; // TODO: 建远程后替换
+static const QString kRepoUrl      = "https://github.com/padhialuo0426/qt-ffconv";
 static const QString kFfmpegDocUrl = "https://ffmpeg.org/documentation.html";
 
 // ---- 小工具：同步执行命令并返回 stdout ----
