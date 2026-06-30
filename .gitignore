@@ -1,0 +1,18 @@
+# 构建产物
+/build/
+*.o
+*.obj
+
+# Qt 自动生成
+*_autogen/
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+
+# 编辑器 / IDE
+*.user
+.vscode/
+.idea/
+
+# Claude Code 本地数据
+.claude/
