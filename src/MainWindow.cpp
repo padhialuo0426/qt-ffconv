@@ -11,7 +11,7 @@
 
 // 顶部信息常量
 static const QString kAppVersion   = "0.1";
-static const QString kRepoUrl      = "https://github.com/your-name/ffmpeg-qt6"; // TODO: 建远程后替换
+static const QString kRepoUrl      = "https://github.com/your-name/qt-ffconv"; // TODO: 建远程后替换
 static const QString kFfmpegDocUrl = "https://ffmpeg.org/documentation.html";
 
 // ---- 小工具：同步执行命令并返回 stdout ----
@@ -27,7 +27,7 @@ static QString runCapture(const QString &prog, const QStringList &args, int time
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
-    setWindowTitle(tr("FFmpeg 转码器"));
+    setWindowTitle("ffconv");
     setAcceptDrops(true);
     resize(960, 620);
 
@@ -600,7 +600,7 @@ void MainWindow::showAbout()
     const QString ffver = runCapture(m_ffmpegPath, {"-hide_banner", "-version"})
                               .section('\n', 0, 0);
     QMessageBox::about(this, tr("关于"),
-        tr("<h3>FFmpeg 转码器</h3>"
+        tr("<h3>ffconv</h3>"
            "<p>版本 %1</p>"
            "<p>一个基于 Qt %2 的本机视频转码前端，通过调用系统 FFmpeg 完成转码。</p>"
            "<p>%3</p>"

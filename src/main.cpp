@@ -8,8 +8,8 @@
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QApplication::setOrganizationName("ffmpeg-qt6");
-    QApplication::setApplicationName("ffmpeg-qt6");
+    QApplication::setOrganizationName("ffconv");
+    QApplication::setApplicationName("ffconv");
 
     // 读取语言设置：默认中文（源语言），用户可在「设置→语言」改为英文
     QSettings settings;
@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
     // 其它语言加载内嵌的 .qm，并加载 Qt 自带翻译让标准按钮一致。
     QTranslator appTr, qtTr;
     if (lang != "zh_CN") {
-        if (appTr.load(":/i18n/ffmpeg-qt6_" + lang))
+        if (appTr.load(":/i18n/qt-ffconv_" + lang))
             app.installTranslator(&appTr);
     } else {
         if (qtTr.load("qtbase_zh_CN",
