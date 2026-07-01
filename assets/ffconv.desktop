@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=ffconv
+GenericName=Video Transcoder
+Comment=基于 FFmpeg 的视频转码工具
+Exec=ffconv %F
+Icon=ffconv
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;

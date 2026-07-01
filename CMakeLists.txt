@@ -14,7 +14,13 @@ add_executable(ffconv
     src/MainWindow.cpp
     src/FfmpegProcess.cpp
     src/EncodeSettings.cpp
+    assets/icon.qrc          # 内嵌图标资源（窗口/任务栏图标，AUTORCC 处理）
 )
+
+# Windows：把 .ico 编进 exe，让文件管理器显示程序图标
+if(WIN32)
+    target_sources(ffconv PRIVATE assets/app.rc)
+endif()
 
 target_link_libraries(ffconv PRIVATE Qt6::Widgets)
 
@@ -26,3 +32,17 @@ qt_add_translations(ffconv
     TS_FILES translations/ffconv_en.ts
     RESOURCE_PREFIX "/i18n"
 )
+
+# Linux 桌面集成：安装可执行文件、.desktop 与图标（应用菜单/AppImage 用）
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+    install(TARGETS ffconv RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES assets/ffconv.desktop
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES assets/icon-256.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
+            RENAME ffconv.png)
+    install(FILES assets/icon.svg
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+            RENAME ffconv.svg)
+endif()
