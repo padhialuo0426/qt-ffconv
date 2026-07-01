@@ -1,76 +1,133 @@
 # qt-ffconv
 
-**ffconv** —— 一个视频转码小工具：Qt 6 Widgets 前端，通过 `QProcess` 调用本机的 `ffmpeg` / `ffprobe` 完成批量转码。
+**ffconv** —— 一个视频转码小工具：Qt 6 Widgets 前端，通过 `QProcess` 调用本机的 `ffmpeg` / `ffprobe` 完成批量转码。跨平台(Linux x86_64/aarch64、Windows、macOS),硬件后端按平台自动探测。
 
 ## 功能
 
-- **批量队列**：拖拽文件或「添加文件」按钮加入多个视频，排队逐个转码，每行显示状态与进度，底部为总进度条。
+- **批量队列**：拖拽文件或「添加文件」按钮加入多个视频，每行显示状态与进度，底部为总进度条。
 - **转码参数**
   - 视频编码：H.264 / H.265(HEVC) / AV1
-  - 加速后端：软件(libx264/x265/SVT-AV1) / Intel QSV / Intel VAAPI / NVIDIA NVENC
-  - 质量：CRF / CQ / global_quality（数值越小质量越高），按后端自动映射到 `-crf` / `-global_quality` / `-cq` / `-qp`
+  - 加速后端(**动态探测,仅显示本机可用项**)：软件(libx264/x265/SVT-AV1) / Intel QSV / VAAPI / NVIDIA NVENC / AMD AMF / Rockchip RKMPP / Apple VideoToolbox / V4L2 M2M
+  - 质量：CRF / CQ / global_quality（数值越小质量越高），按后端自动映射到对应参数
   - 音频：直接复制 / AAC / Opus（可设码率）
   - 输出容器：mp4 / mkv / mov / webm（HEVC 进 mp4/mov 自动加 `hvc1` 标签）
   - 输出目录（留空 = 与源文件同目录；自动避免覆盖源文件）
+- **两层后端探测**：先解析 `ffmpeg -encoders` 得知编译进了哪些编码器,再探测硬件是否在场(GPU 厂商 ID、VPU 设备节点等),**两者都满足**的后端才出现在下拉里,避免选到编不出的死选项。
+- **并发转码**：「并发」下拉可选 默认 / 1 / 2 / 4 / 8,多路 ffmpeg 进程并行(适合多编码引擎的显卡);「默认」按 GPU 型号自动估计引擎数,软件后端强制单路以免拖垮 CPU。
 - **队列勾选**：每行带复选框，仅勾选的视频参与转码；支持「全选/全不选/反选」、鼠标框选 + 空格批量勾选。转码完成后自动取消勾选，重新勾选即可换格式重转。
-- **本机编解码能力检测**：「检测本机编解码能力…」按钮，弹窗显示 ffmpeg 版本、过滤出的硬件编/解码器，以及全部编码器 / 解码器列表。窗口底部状态栏常驻显示 ffmpeg 版本。
-- **顶部菜单**：文件 / 设置 / 帮助。
-  - 设置 → 语言：**简体中文 / English**（基于 Qt Linguist，切换后重启生效，默认中文）。
-  - 帮助：使用说明、FFmpeg 官方文档、项目仓库、开源许可、关于。
+- **本机编解码能力检测**：弹窗显示 ffmpeg 版本、过滤出的硬件编/解码器,以及全部编码器 / 解码器列表。窗口底部状态栏常驻显示 ffmpeg 版本。
+- **多语言**：设置 → 语言 可切换 **简体中文 / English**（基于 Qt Linguist，切换后重启生效，默认中文）。
 - **实时日志**与**取消**。
 
 ## 依赖
 
-- Qt 6（本机安装于 `~/Qt/6.11.1/gcc_64`）
-- CMake ≥ 3.21、Ninja、g++
-- 系统 `ffmpeg` / `ffprobe` 在 PATH 中（本机为 RPM Fusion 完整版，含 H.264/HEVC 硬件编解码）
-- OpenGL 开发包：`libglvnd-devel`、`mesa-libGL-devel`
+通用:**Qt 6**(Widgets + LinguistTools)、**CMake ≥ 3.21**、**Ninja**、C++17 编译器,以及 PATH 中编译进所需编解码器的系统 **`ffmpeg` / `ffprobe`**。硬件后端还需对应**驱动**在场(NVIDIA / Intel / AMD 驱动、Rockchip MPP 等)。
+
+### 各发行版安装命令
+
+**Debian / Ubuntu**
+
+```bash
+sudo apt install build-essential cmake ninja-build \
+    qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev
+sudo apt install ffmpeg
+```
+
+**Fedora / RHEL**
+
+```bash
+sudo dnf install gcc-c++ cmake ninja-build \
+    qt6-qtbase-devel qt6-qttools-devel libglvnd-devel mesa-libGL-devel
+# 完整版 ffmpeg 走 RPM Fusion(含 x264/x265 及硬件编解码)
+sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install ffmpeg
+```
+
+**Arch Linux**
+
+```bash
+sudo pacman -S base-devel cmake ninja qt6-base qt6-tools ffmpeg
+```
+
+**Windows(x86_64)**:用在线安装器装 Qt 6(MSVC 版)+ VS 2022 Build Tools;ffmpeg 用 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) `ffmpeg-release-full` 或 [BtbN](https://github.com/BtbN/FFmpeg-Builds) gpl 版(含 nvenc/qsv/amf),放进 PATH。
+
+### 自行编译:Rockchip(aarch64,RKMPP)
+
+发行版 ffmpeg 不含 `rkmpp`,需自编 **MPP** + **ffmpeg-rockchip**。先装基础依赖(Debian 系,含 `libdrm-dev`、`pkg-config`):
+
+```bash
+sudo apt install build-essential cmake ninja-build pkg-config libdrm-dev \
+    qt6-base-dev qt6-tools-dev qt6-tools-dev-tools
+```
+
+**① Rockchip MPP**(装到 `/usr`):
+
+```bash
+git clone -b jellyfin-mpp https://github.com/nyanmisaka/mpp.git
+cmake -S mpp -B mpp-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build mpp-build
+sudo cmake --install mpp-build
+```
+
+> 用独立的 `mpp-build` 目录,别在仓库自带的 `build/` 内构建——那里放着 `version.in`、`merge_objects.cmake` 等 cmake 辅助文件,清掉会导致配置失败。
+
+**② ffmpeg-rockchip**(装到 `/usr/local`):
+
+```bash
+git clone https://github.com/nyanmisaka/ffmpeg-rockchip.git
+cd ffmpeg-rockchip
+./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --enable-rkmpp --enable-libdrm --disable-vulkan
+make -j$(nproc)
+sudo make install
+```
+
+> `--disable-vulkan` 必需:板上 Vulkan 头偏旧会在编译时报错,且 RK3588 硬件编解码走 rkmpp 而非 Vulkan。
+
+**③ 运行时权限**:确保普通用户能访问 `/dev/mpp_service` —— 加 udev 规则 `KERNEL=="mpp_service", MODE="0660", GROUP="video"` 并把用户加入 `video` 组(`sudo usermod -aG video $USER`,重新登录生效),否则 rkmpp 会报 "Generic error in an external library"。
 
 ## 构建
 
-### CLion（推荐）
+命令行 + `CMakePresets.json`。共三个预设:
 
-直接用 CLion 打开本项目目录，它会自动识别仓库中的 `CMakePresets.json`，
-在 *Settings → Build → CMake* 里启用 **Debug** / **Release** 两个预设即可，
-Qt 路径与 Ninja 生成器都已在预设里配好，无需额外设置。
+| 预设 | 用途 | Qt 来源 |
+|------|------|---------|
+| `debug` | 开发调试(输出 `build/debug`) | 预设中 `CMAKE_PREFIX_PATH` 指定的 Qt |
+| `release` | 本地发布(输出 `build/release`) | 同上 |
+| `release-system` | 分发用(输出 `build/release-system`) | **系统 Qt**(无 RPATH) |
 
-### 命令行
+`debug` / `release` 用的 Qt 路径写在 `CMakePresets.json` 的 `base` 预设里(默认 `~/Qt/6.11.1/gcc_64`),按你本机 Qt 安装位置改;`release-system` 链接系统 Qt,不依赖该路径。
 
 ```bash
-cmake --preset debug      # 或 release
+# 开发构建
+cmake --preset debug
 cmake --build --preset debug
+
+# 分发构建(系统 Qt)
+cmake --preset release-system
+cmake --build --preset release-system
 ```
 
-可用预设：`debug`（输出到 `build/debug`）、`release`（输出到 `build/release`）。
+**Windows(x86_64)**:装 Qt 6(MSVC 版)+ VS 2022 Build Tools,配置时用 `-DCMAKE_PREFIX_PATH=<Qt路径>`,构建后用 Qt 自带 `windeployqt` 收集 DLL:
+
+```powershell
+cmake -S . -B build\win -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+      -DCMAKE_PREFIX_PATH="C:\Qt\6.8.2\msvc2022_64"
+cmake --build build\win
+windeployqt --release build\win\ffconv.exe
+```
 
 ## 运行
 
 ```bash
-./build/debug/ffconv      # 或 build/release/ffconv
+./build/debug/ffconv          # 或 build/release/ffconv、build/release-system/ffconv
 ```
 
-二进制已嵌入 Qt 库的 RPATH，无需额外设置环境变量。
-
-## 代码结构
-
-| 文件 | 职责 |
-|------|------|
-| `src/main.cpp` | 程序入口 |
-| `src/EncodeSettings.{h,cpp}` | 编码参数 → ffmpeg 命令行参数的映射 |
-| `src/TranscodeJob.h` | 单个转码任务的数据结构与状态 |
-| `src/FfmpegProcess.{h,cpp}` | QProcess 封装：ffprobe 取时长、ffmpeg 转码、`-progress` 进度解析 |
-| `src/MainWindow.{h,cpp}` | 主界面：菜单栏、队列、参数面板、能力检测对话框、日志 |
-| `translations/ffconv_en.ts` | 英文翻译源（`lrelease` 后内嵌为 `:/i18n` 资源） |
-
-## 国际化
-
-界面字符串均包裹在 `tr()` 中，英文翻译位于 `translations/ffconv_en.ts`。
-构建时由 `qt_add_translations` 自动 `lrelease` 成 `.qm` 并内嵌进程序。
-新增/修改界面文案后，运行 `cmake --build build/debug --target update_translations`
-即可用 `lupdate` 刷新 `.ts`，再补译。
+`debug` / `release` 二进制已嵌入 Qt 库 RPATH,直接运行;`release-system` 依赖系统 Qt 运行库。Linux 可 `cmake --install build/release-system --prefix ~/.local` 装入桌面菜单(带图标)。运行前确保 `ffmpeg` / `ffprobe` 在 PATH 中。
 
 ## 许可证
 
-本项目以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与本机所用的 FFmpeg
+本项目以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与常用的 FFmpeg
 （`--enable-gpl --enable-version3` 构建，含 x264/x265 等 GPL 组件）保持一致。
 本程序通过外部进程调用系统 FFmpeg，FFmpeg 及其编解码库遵循各自许可证。
