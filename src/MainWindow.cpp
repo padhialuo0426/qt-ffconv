@@ -295,8 +295,15 @@ void MainWindow::detectDevices()
 
 #if defined(Q_OS_MACOS)
     m_hwPresent.insert(int(HwAccel::VideoToolbox));
-#endif
-
+#elif defined(Q_OS_WIN)
+    // Windows 无 sysfs / 设备节点可读的厂商信息：设备层放行 Windows 相关后端，
+    // 由编码器层(ffmpeg -encoders)负责过滤——官方 ffmpeg 构建里有对应编码器
+    // 且驱动/显卡具备时才会真正可用。VAAPI/RKMPP/V4L2M2M 是 Linux-only，其编码器
+    // 不会出现在 Windows ffmpeg 中，编码器层自然挡掉，无需在此列出。
+    m_hwPresent.insert(int(HwAccel::QSV));     // Intel 核显
+    m_hwPresent.insert(int(HwAccel::NVENC));   // NVIDIA 独显
+    m_hwPresent.insert(int(HwAccel::AMF));     // AMD 显卡
+#else
     // GPU 厂商：遍历 DRM render 节点读 vendor ID
     bool intel = false, amd = false, nvidia = false;
     const QDir drm("/sys/class/drm");
@@ -335,6 +342,7 @@ void MainWindow::detectDevices()
             break;
         }
     }
+#endif
 }
 
 int MainWindow::autoNvencConcurrency() const
