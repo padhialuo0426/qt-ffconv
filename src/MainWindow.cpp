@@ -8,6 +8,8 @@
 #include <QSettings>
 #include <QUrl>
 #include <QLibraryInfo>
+#include <QDir>
+#include <QFile>
 
 // 顶部信息常量
 #ifndef APP_VERSION
@@ -34,34 +36,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     setAcceptDrops(true);
     resize(960, 620);
 
-    m_runner = new FfmpegProcess(this);
-    m_runner->setBinaries(m_ffmpegPath, m_ffprobePath);
-    connect(m_runner, &FfmpegProcess::logLine, this, &MainWindow::appendLog);
-    connect(m_runner, &FfmpegProcess::progress, this, [this](int pct) {
-        if (m_currentIndex >= 0) {
-            m_jobs[m_currentIndex].progress = pct;
-            if (auto *it = m_table->item(m_currentIndex, 2))
-                it->setText(QString::number(pct) + "%");
-        }
-        // 整体进度 = (本次已完成 + 当前任务比例) / 本次勾选总数
-        int done = 0;
-        for (int r : m_runRows)
-            if (r >= 0 && r < m_jobs.size() && m_jobs[r].status == JobStatus::Done)
-                ++done;
-        double overall = m_runRows.isEmpty() ? 0
-            : (done * 100.0 + pct) / m_runRows.size();
-        m_overallBar->setValue(int(overall));
-    });
-    connect(m_runner, &FfmpegProcess::finished, this, [this](bool ok) {
-        if (m_currentIndex >= 0) {
-            setRowStatus(m_currentIndex, ok ? JobStatus::Done : JobStatus::Failed);
-            // 转码成功后自动取消勾选：避免再次"开始"时被重复转码；
-            // 若选错格式想重转，重新勾选该视频即可。
-            if (ok)
-                setRowChecked(m_currentIndex, false);
-        }
-        runNext();
-    });
+    // 转码工作进程按需创建成一个「池」：每个任务一个 FfmpegProcess，
+    // 最多 m_concurrency 个同时运行(见 startJob/pump)。
 
     // ===== 队列表格 =====
     m_table = new QTableWidget(0, 3, this);
@@ -106,11 +82,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_codecCombo->addItem("H.265 / HEVC", int(VideoCodec::HEVC));
     m_codecCombo->addItem("AV1", int(VideoCodec::AV1));
 
+    // 后端下拉根据本机 `ffmpeg -encoders` 动态生成：只列出当前编码格式
+    // 真正可用的后端；切换编码格式时重建。
+    detectEncoders();
+    detectDevices();
     m_hwCombo = new QComboBox;
-    m_hwCombo->addItem(tr("软件 (libx264/x265/SVT-AV1)"), int(HwAccel::Software));
-    m_hwCombo->addItem(tr("Intel QSV"),  int(HwAccel::QSV));
-    m_hwCombo->addItem(tr("Intel VAAPI"), int(HwAccel::VAAPI));
-    m_hwCombo->addItem(tr("NVIDIA NVENC"), int(HwAccel::NVENC));
+    populateHwCombo();
+    connect(m_codecCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this] { populateHwCombo(); });
 
     m_qualitySpin = new QSpinBox;
     m_qualitySpin->setRange(0, 63);
@@ -134,6 +113,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_containerCombo = new QComboBox;
     m_containerCombo->addItems({"mp4", "mkv", "mov", "webm"});
 
+    // 并发：默认(按 GPU 估计) / 1 / 2 / 4 / 8。data=0 表示「默认」，其余为具体并发数。
+    m_autoConcurrency = autoNvencConcurrency();
+    m_concurrencyCombo = new QComboBox;
+    m_concurrencyCombo->addItem(tr("默认 (%1)").arg(m_autoConcurrency), 0);
+    for (int n : {1, 2, 4, 8})
+        m_concurrencyCombo->addItem(QString::number(n), n);
+    m_concurrencyCombo->setToolTip(tr(
+        "同时运行的转码任务数。多个 NVENC 引擎的高端卡(如 RTX 4090=2、"
+        "RTX 6000 Ada/L40=3)可调高以提升吞吐；普通单引擎卡保持 1 即可。\n"
+        "软件编码会强制为 1，避免占满 CPU。"));
+
     m_outputDirEdit = new QLineEdit;
     m_outputDirEdit->setPlaceholderText(tr("留空 = 与源文件同目录"));
     auto *browseBtn = new QPushButton(tr("浏览…"));
@@ -149,6 +139,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     form->addRow(tr("音频"), m_audioCombo);
     form->addRow(tr("音频码率"), m_audioBitrateSpin);
     form->addRow(tr("输出格式"), m_containerCombo);
+    form->addRow(tr("并发"), m_concurrencyCombo);
     form->addRow(tr("输出目录"), outDirLay);
 
     auto *paramBox = new QGroupBox(tr("转码参数"));
@@ -254,7 +245,7 @@ void MainWindow::addPath(const QString &path)
 
 void MainWindow::removeSelected()
 {
-    if (m_runner->isRunning()) return;
+    if (isBusy()) return;
     QList<int> rows = selectedRows();
     std::sort(rows.begin(), rows.end(), std::greater<int>());
     for (int r : rows) {
@@ -265,7 +256,7 @@ void MainWindow::removeSelected()
 
 void MainWindow::clearQueue()
 {
-    if (m_runner->isRunning()) return;
+    if (isBusy()) return;
     m_table->setRowCount(0);
     m_jobs.clear();
     m_overallBar->setValue(0);
@@ -279,6 +270,144 @@ void MainWindow::chooseOutputDir()
 }
 
 // ---------- 设置 / 路径 ----------
+// ---------- 后端探测 ----------
+void MainWindow::detectEncoders()
+{
+    m_encoders.clear();
+    const QString out = runCapture(m_ffmpegPath, {"-hide_banner", "-encoders"});
+    // 每行形如：" V....D h264_nvenc           NVIDIA NVENC H.264 encoder"
+    // 前 6 列为标志位，其后第一个 token 即编码器名。
+    static const QRegularExpression re(R"(^\s*[A-Z.]{6}\s+(\S+))");
+    const QStringList lines = out.split('\n');
+    for (const QString &ln : lines) {
+        const auto m = re.match(ln);
+        if (m.hasMatch())
+            m_encoders.insert(m.captured(1));
+    }
+}
+
+void MainWindow::detectDevices()
+{
+    // 只读地判断「图形/VPU 设备是否在场」，不采集任何机器标识信息。
+    // 编码器编进 ffmpeg ≠ 硬件存在，这一层用设备节点/厂商 ID 精确挡掉死选项。
+    m_hwPresent.clear();
+    m_hwPresent.insert(int(HwAccel::Software));   // 软件后端永远可用
+
+#if defined(Q_OS_MACOS)
+    m_hwPresent.insert(int(HwAccel::VideoToolbox));
+#endif
+
+    // GPU 厂商：遍历 DRM render 节点读 vendor ID
+    bool intel = false, amd = false, nvidia = false;
+    const QDir drm("/sys/class/drm");
+    for (const QString &n : drm.entryList({"renderD*"}, QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QFile f("/sys/class/drm/" + n + "/device/vendor");
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QString v = QString::fromUtf8(f.readAll()).trimmed().toLower();
+        if      (v == "0x8086") intel  = true;   // Intel
+        else if (v == "0x1002") amd    = true;   // AMD
+        else if (v == "0x10de") nvidia = true;   // NVIDIA
+    }
+    if (QFile::exists("/dev/nvidia0"))            // 专有驱动可能不出 DRM 节点
+        nvidia = true;
+
+    if (intel)  { m_hwPresent.insert(int(HwAccel::QSV));
+                  m_hwPresent.insert(int(HwAccel::VAAPI)); }
+    if (amd)    { m_hwPresent.insert(int(HwAccel::AMF));
+                  m_hwPresent.insert(int(HwAccel::VAAPI)); }
+    if (nvidia)   m_hwPresent.insert(int(HwAccel::NVENC));
+
+    // Rockchip VPU
+    if (QFile::exists("/dev/mpp_service"))
+        m_hwPresent.insert(int(HwAccel::RKMPP));
+
+    // V4L2 M2M 编码设备：按 video4linux 节点名匹配编码器（排除普通摄像头）
+    const QDir v4l("/sys/class/video4linux");
+    for (const QString &n : v4l.entryList({"video*"}, QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QFile f("/sys/class/video4linux/" + n + "/name");
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QString name = QString::fromUtf8(f.readAll()).trimmed().toLower();
+        if (name.contains("enc") || name.contains("venus")
+            || name.contains("codec") || name.contains("vpu")) {
+            m_hwPresent.insert(int(HwAccel::V4L2M2M));
+            break;
+        }
+    }
+}
+
+int MainWindow::autoNvencConcurrency() const
+{
+    // 「默认」并发的自动取值(A 方案)：NVENC 物理引擎数无法由 nvidia-smi 直接查出，
+    // 只能按 GPU 型号名对照 NVIDIA 支持矩阵估计。未知/无 N 卡一律回退 1。
+    const QString name =
+        runCapture("nvidia-smi", {"--query-gpu=name", "--format=csv,noheader"})
+            .trimmed().toLower();
+    if (name.isEmpty())
+        return 1;
+    if (name.contains("rtx 6000 ada") || name.contains("l40"))
+        return 3;                       // AD102 全开三 NVENC
+    if (name.contains("4090"))
+        return 2;                       // 消费版 4090 开两 NVENC
+    return 1;                           // 其余按单引擎处理
+}
+
+QString MainWindow::hwDisplayName(HwAccel hw) const
+{
+    switch (hw) {
+    case HwAccel::Software:     return tr("软件 (libx264/x265/SVT-AV1)");
+    case HwAccel::QSV:          return tr("Intel QSV");
+    case HwAccel::VAAPI:        return tr("VAAPI (Intel / AMD)");
+    case HwAccel::NVENC:        return tr("NVIDIA NVENC");
+    case HwAccel::AMF:          return tr("AMD AMF");
+    case HwAccel::RKMPP:        return tr("Rockchip RKMPP");
+    case HwAccel::VideoToolbox: return tr("Apple VideoToolbox");
+    case HwAccel::V4L2M2M:      return tr("V4L2 M2M (高通 / ARM VPU)");
+    }
+    return QString();
+}
+
+void MainWindow::populateHwCombo()
+{
+    const VideoCodec codec = VideoCodec(m_codecCombo->currentData().toInt());
+    // 记住当前选择，重建后尽量保留
+    const int prev = m_hwCombo->count() ? m_hwCombo->currentData().toInt()
+                                        : int(HwAccel::Software);
+
+    QSignalBlocker block(m_hwCombo);
+    m_hwCombo->clear();
+
+    static const HwAccel order[] = {
+        HwAccel::Software, HwAccel::QSV, HwAccel::VAAPI, HwAccel::NVENC,
+        HwAccel::AMF, HwAccel::RKMPP, HwAccel::VideoToolbox, HwAccel::V4L2M2M,
+    };
+    // 一个后端要同时满足：① ffmpeg 编进了该编码器；② 本机有对应硬件在场。
+    // 探测失败(未找到 ffmpeg 或 -encoders 无输出)时退回经典四后端，避免整表为空。
+    const bool detected = !m_encoders.isEmpty();
+    for (HwAccel hw : order) {
+        const QString enc = EncodeSettings::encoderFor(codec, hw);
+        if (enc.isEmpty())
+            continue;
+        const bool encOk = detected
+            ? m_encoders.contains(enc)
+            : (hw == HwAccel::Software || hw == HwAccel::QSV
+               || hw == HwAccel::VAAPI || hw == HwAccel::NVENC);
+        const bool devOk = m_hwPresent.contains(int(hw));
+        if (encOk && devOk)
+            m_hwCombo->addItem(hwDisplayName(hw), int(hw));
+    }
+
+    if (m_hwCombo->count() == 0) {
+        m_hwCombo->addItem(tr("无可用编码器"), int(HwAccel::Software));
+        m_hwCombo->setEnabled(false);
+    } else {
+        m_hwCombo->setEnabled(true);
+        const int idx = m_hwCombo->findData(prev);
+        m_hwCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+}
+
 EncodeSettings MainWindow::currentSettings() const
 {
     EncodeSettings s;
@@ -303,9 +432,19 @@ QString MainWindow::buildOutputPath(const QString &input, const EncodeSettings &
 }
 
 // ---------- 运行队列 ----------
+int MainWindow::resolveConcurrency() const
+{
+    const int sel = m_concurrencyCombo->currentData().toInt(); // 0 = 默认(自动)
+    int n = (sel <= 0) ? m_autoConcurrency : sel;
+    // 软件编码强制单路，避免并发打满 CPU
+    if (HwAccel(m_hwCombo->currentData().toInt()) == HwAccel::Software)
+        n = 1;
+    return qMax(1, n);
+}
+
 void MainWindow::startQueue()
 {
-    if (m_runner->isRunning())
+    if (isBusy())
         return;
 
     // 只转码被勾选的视频（含此前已完成、重新勾选想换格式重转的）
@@ -330,40 +469,115 @@ void MainWindow::startQueue()
         if (auto *it = m_table->item(i, 2)) it->setText("0%");
     }
     m_overallBar->setValue(0);
+    m_concurrency = resolveConcurrency();
+    if (m_concurrency > 1)
+        appendLog(tr("==== 并发 %1 路 ====").arg(m_concurrency));
     setUiRunning(true);
-    m_currentIndex = -1;
-    runNext();
+    pump();
 }
 
-void MainWindow::runNext()
+void MainWindow::startJob(int row)
 {
-    // 找下一个待处理任务
-    int next = -1;
-    for (int i = 0; i < m_jobs.size(); ++i)
-        if (m_jobs[i].status == JobStatus::Pending) { next = i; break; }
+    auto *worker = new FfmpegProcess(this);
+    worker->setBinaries(m_ffmpegPath, m_ffprobePath);
+    m_active.insert(worker, row);
 
-    if (next < 0) {            // 队列结束
-        m_currentIndex = -1;
-        setUiRunning(false);
-        appendLog(tr("==== 队列处理完成 ===="));
-        m_overallBar->setValue(100);
-        return;
-    }
+    connect(worker, &FfmpegProcess::logLine, this, &MainWindow::appendLog);
+    connect(worker, &FfmpegProcess::progress, this, [this, worker](int pct) {
+        const int r = m_active.value(worker, -1);
+        if (r >= 0 && r < m_jobs.size()) {
+            m_jobs[r].progress = pct;
+            if (auto *it = m_table->item(r, 2))
+                it->setText(QString::number(pct) + "%");
+        }
+        updateOverall();
+    });
+    connect(worker, &FfmpegProcess::finished, this, [this, worker](bool ok) {
+        const int r = m_active.value(worker, -1);
+        // 已被取消的行保留「已取消」，不要覆盖成失败
+        if (r >= 0 && m_jobs[r].status != JobStatus::Cancelled) {
+            setRowStatus(r, ok ? JobStatus::Done : JobStatus::Failed);
+            // 转码成功后自动取消勾选：避免再次"开始"时被重复转码；
+            // 若选错格式想重转，重新勾选该视频即可。
+            if (ok)
+                setRowChecked(r, false);
+        }
+        m_active.remove(worker);
+        worker->deleteLater();
+        if (!m_cancelling)
+            pump();   // 补位后继任务，并在全部结束时收尾
+    });
 
-    m_currentIndex = next;
-    setRowStatus(next, JobStatus::Running);
-    const auto &job = m_jobs[next];
+    setRowStatus(row, JobStatus::Running);
+    const auto &job = m_jobs[row];
     appendLog(tr("→ 开始：%1  →  %2").arg(job.inputPath, job.outputPath));
-    m_runner->start(job.inputPath, job.outputPath, job.settings);
+    worker->start(job.inputPath, job.outputPath, job.settings);
+}
+
+void MainWindow::pump()
+{
+    // 补足并发槽位：把 Pending 行陆续投入运行，直到达到并发上限
+    while (m_active.size() < m_concurrency) {
+        int next = -1;
+        for (int i = 0; i < m_jobs.size(); ++i)
+            if (m_jobs[i].status == JobStatus::Pending) { next = i; break; }
+        if (next < 0)
+            break;
+        startJob(next);   // 内部立即置为 Running，下一轮扫描不会重复选中
+    }
+    updateOverall();
+
+    // 无活跃进程且无待处理 → 队列结束
+    if (m_active.isEmpty()) {
+        bool anyPending = false;
+        for (const auto &j : m_jobs)
+            if (j.status == JobStatus::Pending) { anyPending = true; break; }
+        if (!anyPending) {
+            setUiRunning(false);
+            appendLog(tr("==== 队列处理完成 ===="));
+            m_overallBar->setValue(100);
+        }
+    }
+}
+
+void MainWindow::updateOverall()
+{
+    if (m_runRows.isEmpty()) { m_overallBar->setValue(0); return; }
+    double sum = 0;
+    for (int r : m_runRows) {
+        if (r < 0 || r >= m_jobs.size()) continue;
+        switch (m_jobs[r].status) {
+        case JobStatus::Done:
+        case JobStatus::Failed:
+        case JobStatus::Cancelled: sum += 100; break;        // 已结算
+        case JobStatus::Running:   sum += m_jobs[r].progress; break;
+        default: break;                                       // Pending = 0
+        }
+    }
+    m_overallBar->setValue(int(sum / m_runRows.size()));
 }
 
 void MainWindow::cancelQueue()
 {
-    if (!m_runner->isRunning()) return;
-    if (m_currentIndex >= 0)
-        m_jobs[m_currentIndex].status = JobStatus::Cancelled;
-    m_runner->cancel();
+    if (!isBusy()) return;
+    m_cancelling = true;   // cancel() 同步触发 finished 回调，先设标志阻止其补位
+
+    // 先把尚未启动的 Pending 行标记为取消，防止 pump 再投放
+    for (int r : m_runRows)
+        if (r >= 0 && r < m_jobs.size() && m_jobs[r].status == JobStatus::Pending)
+            setRowStatus(r, JobStatus::Cancelled);
+
+    // 取消所有活跃工作进程
+    const auto workers = m_active.keys();
+    for (FfmpegProcess *w : workers) {
+        const int r = m_active.value(w, -1);
+        if (r >= 0 && r < m_jobs.size())
+            setRowStatus(r, JobStatus::Cancelled);
+        w->cancel();   // 同步：其 finished 回调会在此期间发生
+    }
+
     appendLog(tr("✗ 已取消"));
+    m_cancelling = false;
     setUiRunning(false);
 }
 
@@ -476,8 +690,9 @@ void MainWindow::showCapabilities()
 
     auto hwLines = [](const QString &all) {
         QStringList out;
-        const QRegularExpression re("(vaapi|qsv|nvenc|cuvid|_amf|vulkan)",
-                                    QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpression re(
+            "(vaapi|qsv|nvenc|nvdec|cuvid|_amf|rkmpp|videotoolbox|v4l2m2m|vulkan)",
+            QRegularExpression::CaseInsensitiveOption);
         for (const QString &l : all.split('\n'))
             if (re.match(l).hasMatch())
                 out << l.trimmed();

@@ -1,34 +1,52 @@
 #include "EncodeSettings.h"
 
-QString EncodeSettings::encoderName() const
+QString EncodeSettings::encoderFor(VideoCodec codec, HwAccel hw)
 {
     switch (codec) {
     case VideoCodec::H264:
         switch (hw) {
-        case HwAccel::Software: return "libx264";
-        case HwAccel::QSV:      return "h264_qsv";
-        case HwAccel::VAAPI:    return "h264_vaapi";
-        case HwAccel::NVENC:    return "h264_nvenc";
+        case HwAccel::Software:     return "libx264";
+        case HwAccel::QSV:          return "h264_qsv";
+        case HwAccel::VAAPI:        return "h264_vaapi";
+        case HwAccel::NVENC:        return "h264_nvenc";
+        case HwAccel::AMF:          return "h264_amf";
+        case HwAccel::RKMPP:        return "h264_rkmpp";
+        case HwAccel::VideoToolbox: return "h264_videotoolbox";
+        case HwAccel::V4L2M2M:      return "h264_v4l2m2m";
         }
         break;
     case VideoCodec::HEVC:
         switch (hw) {
-        case HwAccel::Software: return "libx265";
-        case HwAccel::QSV:      return "hevc_qsv";
-        case HwAccel::VAAPI:    return "hevc_vaapi";
-        case HwAccel::NVENC:    return "hevc_nvenc";
+        case HwAccel::Software:     return "libx265";
+        case HwAccel::QSV:          return "hevc_qsv";
+        case HwAccel::VAAPI:        return "hevc_vaapi";
+        case HwAccel::NVENC:        return "hevc_nvenc";
+        case HwAccel::AMF:          return "hevc_amf";
+        case HwAccel::RKMPP:        return "hevc_rkmpp";
+        case HwAccel::VideoToolbox: return "hevc_videotoolbox";
+        case HwAccel::V4L2M2M:      return "hevc_v4l2m2m";
         }
         break;
     case VideoCodec::AV1:
         switch (hw) {
-        case HwAccel::Software: return "libsvtav1";
-        case HwAccel::QSV:      return "av1_qsv";
-        case HwAccel::VAAPI:    return "av1_vaapi";
-        case HwAccel::NVENC:    return "av1_nvenc";
+        case HwAccel::Software:     return "libsvtav1";
+        case HwAccel::QSV:          return "av1_qsv";
+        case HwAccel::VAAPI:        return "av1_vaapi";
+        case HwAccel::NVENC:        return "av1_nvenc";
+        case HwAccel::AMF:          return "av1_amf";
+        case HwAccel::RKMPP:        return QString();   // Rockchip 无 AV1 编码
+        case HwAccel::VideoToolbox: return QString();   // Apple 无 AV1 编码
+        case HwAccel::V4L2M2M:      return QString();   // V4L2 M2M 一般无 AV1 编码
         }
         break;
     }
-    return "libx264";
+    return QString();
+}
+
+QString EncodeSettings::encoderName() const
+{
+    const QString n = encoderFor(codec, hw);
+    return n.isEmpty() ? "libx264" : n;
 }
 
 QStringList EncodeSettings::buildArgs(const QString &input, const QString &output) const
@@ -65,6 +83,22 @@ QStringList EncodeSettings::buildArgs(const QString &input, const QString &outpu
         break;
     case HwAccel::VAAPI:
         a << "-qp" << q;
+        break;
+    case HwAccel::AMF:
+        // AMD AMF：固定 QP 模式
+        a << "-rc" << "cqp" << "-qp_i" << q << "-qp_p" << q << "-quality" << "balanced";
+        break;
+    case HwAccel::RKMPP:
+        // Rockchip MPP：固定 QP 码控
+        a << "-rc_mode" << "CQP" << "-qp_init" << q;
+        break;
+    case HwAccel::VideoToolbox:
+        // VideoToolbox 的 -q:v 为 0-100 且越大越好，与 CRF 语义相反，做一次翻转映射
+        a << "-q:v" << QString::number(qBound(1, 100 - quality, 100));
+        break;
+    case HwAccel::V4L2M2M:
+        // V4L2 M2M 多为码率控制、无 CRF/QP；缺省给 5Mbps
+        a << "-b:v" << "5M";
         break;
     }
 

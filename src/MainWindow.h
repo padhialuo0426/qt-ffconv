@@ -1,7 +1,11 @@
 #pragma once
 #include <QMainWindow>
 #include <QVector>
+#include <QSet>
+#include <QHash>
+#include <QString>
 #include "TranscodeJob.h"
+#include "EncodeSettings.h"
 
 class QTableWidget;
 class QComboBox;
@@ -42,9 +46,18 @@ private slots:
 private:
     void  createMenus();
     void  addPath(const QString &path);
+    void  detectEncoders();                       // 解析 `ffmpeg -encoders` 填充 m_encoders
+    void  detectDevices();                         // 探测本机图形/VPU 设备填充 m_hwPresent
+    void  populateHwCombo();                       // 按 编码格式 × 编码器存在 × 硬件在场 重建后端下拉
+    QString hwDisplayName(HwAccel hw) const;       // 后端的界面显示名
     EncodeSettings currentSettings() const;
     QString buildOutputPath(const QString &input, const EncodeSettings &s) const;
-    void  runNext();
+    void  pump();                                  // 补足并发槽位 / 判断队列是否完成
+    void  startJob(int row);                        // 为某行起一个 ffmpeg 工作进程
+    void  updateOverall();                          // 汇总所有本次任务的整体进度
+    int   resolveConcurrency() const;               // 解析并发下拉(默认→自动值；软件强制 1)
+    int   autoNvencConcurrency() const;             // 按 GPU 型号估计 NVENC 引擎数
+    bool  isBusy() const { return !m_active.isEmpty(); }
     void  setRowStatus(int row, JobStatus st);
     void  appendLog(const QString &line);
     void  setUiRunning(bool running);
@@ -68,6 +81,7 @@ private:
     QComboBox      *m_audioCombo = nullptr;
     QSpinBox       *m_audioBitrateSpin = nullptr;
     QComboBox      *m_containerCombo = nullptr;
+    QComboBox      *m_concurrencyCombo = nullptr;
     QLineEdit      *m_outputDirEdit = nullptr;
 
     // 控制 / 输出
@@ -80,8 +94,12 @@ private:
     // 运行状态
     QVector<TranscodeJob> m_jobs;
     QList<int>     m_runRows;        // 本次运行勾选的行
-    int            m_currentIndex = -1;
-    FfmpegProcess *m_runner = nullptr;
+    QHash<FfmpegProcess*, int> m_active;  // 活跃工作进程 → 对应行
+    int            m_concurrency = 1;     // 本次运行的并发槽位数
+    int            m_autoConcurrency = 1; // 「默认」解析出的自动并发数(按 GPU 估计)
+    bool           m_cancelling = false;  // 取消进行中：阻止 pump 补位/覆盖状态
     QString        m_ffmpegPath = "ffmpeg";
     QString        m_ffprobePath = "ffprobe";
+    QSet<QString>  m_encoders;        // 本机 ffmpeg 支持的编码器名集合
+    QSet<int>      m_hwPresent;       // 硬件在场的后端集合 (HwAccel 转 int)
 };
