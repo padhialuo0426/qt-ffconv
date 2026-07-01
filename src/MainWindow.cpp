@@ -525,6 +525,29 @@ void MainWindow::startQueue()
         return;
     }
 
+    // 选了软件后端、但下拉里其实有硬件编码器 → 可能是忘了选，转码前确认
+    const bool onSoftware =
+        HwAccel(m_hwCombo->currentData().toInt()) == HwAccel::Software;
+    bool hwAvailable = false;
+    for (int i = 0; i < m_hwCombo->count(); ++i)
+        if (HwAccel(m_hwCombo->itemData(i).toInt()) != HwAccel::Software) {
+            hwAvailable = true;
+            break;
+        }
+    if (onSoftware && hwAvailable) {
+        QMessageBox box(QMessageBox::Warning, tr("未使用硬件加速"),
+            tr("当前有可用的硬件编码器但未选择：继续将由 CPU 软件编码，"
+               "速度较慢，并可能导致卡顿。是否继续？"),
+            QMessageBox::NoButton, this);
+        auto *contBtn = box.addButton(tr("继续"), QMessageBox::AcceptRole);
+        auto *cancelBtn = box.addButton(tr("取消"), QMessageBox::RejectRole);
+        box.setDefaultButton(cancelBtn);   // 默认取消，避免误点
+        box.exec();
+        if (box.clickedButton() != contBtn)
+            return;
+        logSession(LogLevel::Warn, tr("有可用硬件编码器，仍选择了软件编码"));
+    }
+
     const EncodeSettings s = currentSettings();
     for (int i : m_runRows) {
         m_jobs[i].settings = s;
