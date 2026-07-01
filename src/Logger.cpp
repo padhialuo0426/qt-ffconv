@@ -5,8 +5,15 @@
 
 Logger::Logger(int keepCount, QObject *parent) : QObject(parent)
 {
-    // 目录始终确定（即便关闭写入，“打开日志目录”仍需它）
+    // 目录始终确定（即便关闭写入，“打开日志目录”仍需它）。
+    // StateLocation 是 Qt 6.7 新增枚举，对着更旧的 Qt（如 Ubuntu 24.04 LTS 的 6.4）
+    // 编译会失败，故按版本退回 AppLocalDataLocation（各平台均可写，Linux 上从
+    // ~/.local/state 变为 ~/.local/share，mac/Windows 目录相同）。
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     m_dir = QStandardPaths::writableLocation(QStandardPaths::StateLocation);
+#else
+    m_dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+#endif
     m_enabled = keepCount > 0;
     m_keep = keepCount;
     if (!m_enabled)

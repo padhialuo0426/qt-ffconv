@@ -19,7 +19,7 @@
 - **软件编码守卫**：若本机有可用硬件编码器却仍选择了软件后端(常是忘了选加速),点「开始转码」前弹窗确认——继续将由 CPU 软件编码,速度较慢并可能卡顿;默认按钮为「取消」防误点。仅在有硬件可选时提示。
 - **分级日志**：5 级(FATAL / ERROR / WARN / INFO / DEBUG)。
   - 窗口按级别过滤(默认 INFO 清爽;ffmpeg 原始命令行/输出为 DEBUG),**点击队列某行只看该视频的日志**,未选为总览;右侧「打开日志目录」直达文件。
-  - 落盘到 `~/.local/state/ffconv/`(XDG StateLocation):**一次开→关程序 = 一个 `ffconv-<时间戳>.log`**,流式写入(崩溃不丢)、始终记全量;整个会话没转码则不建文件。
+  - 落盘到系统标准用户目录(见下方「日志文件位置」):**一次开→关程序 = 一个 `ffconv-<时间戳>.log`**,流式写入(崩溃不丢)、始终记全量;整个会话没转码则不建文件。
   - 设置 → 日志…:本地保留个数(0 = 关闭写入,默认 10,上限 255),超限自动清理最旧文件。
 - **多语言**：设置 → 语言 可切换 **简体中文 / English**（基于 Qt Linguist，切换后重启生效，默认中文）。
 - **取消**：随时终止进行中的转码。
@@ -130,6 +130,18 @@ windeployqt --release build\win\ffconv.exe
 ```
 
 `debug` / `release` 二进制已嵌入 Qt 库 RPATH,直接运行;`release-system` 依赖系统 Qt 运行库。Linux 可 `cmake --install build/release-system --prefix ~/.local` 装入桌面菜单(带图标)。运行前确保 `ffmpeg` / `ffprobe` 在 PATH 中。
+
+## 日志文件位置
+
+日志目录取 Qt 的 `QStandardPaths`(跨平台,三端无需改代码),子目录固定为 `ffconv/ffconv/`,文件名 `ffconv-<时间戳>.log`。`StateLocation` 为 Qt 6.7 新增,对更旧的 Qt 编译时自动退回 `AppLocalDataLocation`,故目录随 Qt 版本略有不同:
+
+| 系统 | Qt ≥ 6.7（`StateLocation`） | Qt < 6.7（退回 `AppLocalDataLocation`） |
+|------|------------------------------|------------------------------------------|
+| **Linux** | `~/.local/state/ffconv/ffconv/` | `~/.local/share/ffconv/ffconv/` |
+| **macOS** | `~/Library/Application Support/ffconv/ffconv/` | 同左（一致） |
+| **Windows** | `C:\Users\<用户>\AppData\Local\ffconv\ffconv\` | 同左（一致） |
+
+> macOS / Windows 没有独立的 "state" 目录概念,两种 Qt 版本解析到同一位置;仅 Linux 在 6.7 以下从 `state` 变为 `share`。界面里「打开日志目录」按钮会直接定位到当前实际目录(Finder / 资源管理器 / 文件管理器)。
 
 ## 许可证
 
