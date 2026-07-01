@@ -6,6 +6,7 @@
 #include <QString>
 #include "TranscodeJob.h"
 #include "EncodeSettings.h"
+#include "Logger.h"
 
 class QTableWidget;
 class QComboBox;
@@ -26,6 +27,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
     bool eventFilter(QObject *obj, QEvent *ev) override;
+    void closeEvent(QCloseEvent *e) override;
 
 private slots:
     void addFiles();
@@ -39,6 +41,7 @@ private slots:
     void checkNone();
     void invertCheck();
     void changeLanguage(const QString &code);
+    void configureLogging();
     void showUsage();
     void showLicense();
     void showAbout();
@@ -59,8 +62,17 @@ private:
     int   autoNvencConcurrency() const;             // 按 GPU 型号估计 NVENC 引擎数
     bool  isBusy() const { return !m_active.isEmpty(); }
     void  setRowStatus(int row, JobStatus st);
-    void  appendLog(const QString &line);
     void  setUiRunning(bool running);
+
+    // 日志（5 级；文件记全量，窗口按级别 + 当前所选任务过滤）
+    void    logSession(LogLevel lv, const QString &msg);          // 会话级事件
+    void    logJob(int row, LogLevel lv, const QString &msg);     // 归属某任务
+    void    logSeparator();                                       // 插入 === 分隔行
+    void    addEntry(const LogEntry &e);                          // 存储 + 落盘 + 增量显示
+    void    rebuildLogView();                                     // 作用域/级别变化时整体重绘
+    void    setLogScope(int jobId);                              // -1 = 总览
+    bool    entryVisible(const LogEntry &e) const;
+    QString formatEntry(const LogEntry &e, bool forFile) const;
     bool  isRowChecked(int row) const;
     void  setRowChecked(int row, bool checked);
     QList<int> selectedRows() const;
@@ -89,6 +101,8 @@ private:
     QPushButton    *m_cancelBtn = nullptr;
     QProgressBar   *m_overallBar = nullptr;
     QPlainTextEdit *m_log = nullptr;
+    QComboBox      *m_logLevelCombo = nullptr;
+    QLabel         *m_logScopeLabel = nullptr;
     QLabel         *m_ffmpegLabel = nullptr;
 
     // 运行状态
@@ -102,4 +116,11 @@ private:
     QString        m_ffprobePath = "ffprobe";
     QSet<QString>  m_encoders;        // 本机 ffmpeg 支持的编码器名集合
     QSet<int>      m_hwPresent;       // 硬件在场的后端集合 (HwAccel 转 int)
+
+    // 日志状态
+    Logger           *m_logger = nullptr;
+    QVector<LogEntry> m_entries;              // 本次会话全部日志（作显示过滤的数据源）
+    LogLevel          m_visLevel = LogLevel::Info;  // 窗口显示阈值（≤ 此级别才显示）
+    int               m_scopeJobId = -1;      // 当前显示作用域：-1=总览，否则某任务 id
+    int               m_nextJobId = 0;        // 任务稳定 id 分配计数
 };

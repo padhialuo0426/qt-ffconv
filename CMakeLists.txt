@@ -14,6 +14,7 @@ add_executable(ffconv
     src/MainWindow.cpp
     src/FfmpegProcess.cpp
     src/EncodeSettings.cpp
+    src/Logger.cpp
     assets/icon.qrc          # 内嵌图标资源（窗口/任务栏图标，AUTORCC 处理）
 )
 

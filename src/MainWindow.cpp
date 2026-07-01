@@ -10,6 +10,7 @@
 #include <QLibraryInfo>
 #include <QDir>
 #include <QFile>
+#include <QDateTime>
 
 // 顶部信息常量
 #ifndef APP_VERSION
@@ -35,6 +36,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     setWindowTitle("ffconv");
     setAcceptDrops(true);
     resize(960, 620);
+
+    // 日志器最先建好：构造期的探测/启动事件也要能记录（此时 m_log 尚未创建，
+    // addEntry 会先入库 + 落盘，待日志窗口建好后 rebuildLogView 一并显示）。
+    // 保留个数从设置读取（0=关闭写入，默认 10，上限 255）。
+    const int keep = qBound(0, QSettings().value("logKeepCount", 10).toInt(), 255);
+    m_logger = new Logger(keep, this);
 
     // 转码工作进程按需创建成一个「池」：每个任务一个 FfmpegProcess，
     // 最多 m_concurrency 个同时运行(见 startJob/pump)。
@@ -86,6 +93,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // 真正可用的后端；切换编码格式时重建。
     detectEncoders();
     detectDevices();
+    logSession(LogLevel::Info, tr("探测完成：编码器 %1 个，在场后端 %2 个")
+                                   .arg(m_encoders.size()).arg(m_hwPresent.size()));
     m_hwCombo = new QComboBox;
     populateHwCombo();
     connect(m_codecCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -173,7 +182,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         const QString ver = runCapture(m_ffmpegPath, {"-hide_banner", "-version"})
                                 .section('\n', 0, 0);
         m_ffmpegLabel->setText(ver.isEmpty() ? tr("⚠ 未找到 ffmpeg") : ver);
+        if (ver.isEmpty())
+            logSession(LogLevel::Fatal, tr("未找到 ffmpeg，无法转码"));
+        else
+            logSession(LogLevel::Info, ver);
     }
+    logSeparator();   // 启动信息(探测 + ffmpeg 版本)与后续队列日志之间的分隔
 
     auto *ctrlLay = new QHBoxLayout;
     ctrlLay->addWidget(m_startBtn);
@@ -189,17 +203,59 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     topSplit->setStretchFactor(0, 3);
     topSplit->setStretchFactor(1, 2);
 
+    // 日志头部：作用域提示 + 打开日志目录 + 级别过滤
+    m_logScopeLabel = new QLabel(tr("总览"));
+    m_logScopeLabel->setToolTip(tr("点击队列中某个视频，此处只显示该视频的日志；未选中则为总览"));
+
+    auto *openLogBtn = new QPushButton(tr("打开日志目录"));
+    connect(openLogBtn, &QPushButton::clicked, this, [this] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(m_logger->dir()));
+    });
+
+    m_logLevelCombo = new QComboBox;
+    m_logLevelCombo->addItem("FATAL", int(LogLevel::Fatal));
+    m_logLevelCombo->addItem("ERROR", int(LogLevel::Error));
+    m_logLevelCombo->addItem("WARN",  int(LogLevel::Warn));
+    m_logLevelCombo->addItem("INFO",  int(LogLevel::Info));
+    m_logLevelCombo->addItem("DEBUG", int(LogLevel::Debug));
+    m_logLevelCombo->setCurrentIndex(m_logLevelCombo->findData(int(m_visLevel)));
+    m_logLevelCombo->setToolTip(tr("窗口显示阈值；ffmpeg 原始输出/命令行为 DEBUG 级。\n"
+                                   "日志文件始终记录全部级别。"));
+    connect(m_logLevelCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        m_visLevel = LogLevel(m_logLevelCombo->currentData().toInt());
+        rebuildLogView();
+    });
+
+    auto *logHeader = new QHBoxLayout;
+    logHeader->addWidget(new QLabel(tr("日志：")));
+    logHeader->addWidget(m_logScopeLabel);
+    logHeader->addStretch();
+    logHeader->addWidget(openLogBtn);
+    logHeader->addWidget(new QLabel(tr("级别")));
+    logHeader->addWidget(m_logLevelCombo);
+
+    // 点击队列行 → 日志窗口切到该任务；未选或多选 → 总览
+    connect(m_table, &QTableWidget::itemSelectionChanged, this, [this] {
+        const QList<int> rows = selectedRows();
+        int jobId = -1;
+        if (rows.size() == 1 && rows.first() >= 0 && rows.first() < m_jobs.size())
+            jobId = m_jobs[rows.first()].id;
+        setLogScope(jobId);
+    });
+
     auto *central = new QWidget;
     auto *mainLay = new QVBoxLayout(central);
     mainLay->addWidget(topSplit, 1);
     mainLay->addLayout(ctrlLay);
-    mainLay->addWidget(new QLabel(tr("日志：")));
+    mainLay->addLayout(logHeader);
     mainLay->addWidget(m_log, 1);
     setCentralWidget(central);
 
     statusBar()->addWidget(m_ffmpegLabel);
 
     createMenus();
+
+    rebuildLogView();   // 显示构造期已入库的启动/探测日志
 }
 
 // ---------- 拖拽 ----------
@@ -230,6 +286,7 @@ void MainWindow::addPath(const QString &path)
 {
     TranscodeJob job;
     job.inputPath = path;
+    job.id = m_nextJobId++;
     m_jobs.append(job);
 
     const int row = m_table->rowCount();
@@ -409,6 +466,7 @@ void MainWindow::populateHwCombo()
     if (m_hwCombo->count() == 0) {
         m_hwCombo->addItem(tr("无可用编码器"), int(HwAccel::Software));
         m_hwCombo->setEnabled(false);
+        logSession(LogLevel::Warn, tr("当前编码格式无可用后端"));
     } else {
         m_hwCombo->setEnabled(true);
         const int idx = m_hwCombo->findData(prev);
@@ -478,8 +536,9 @@ void MainWindow::startQueue()
     }
     m_overallBar->setValue(0);
     m_concurrency = resolveConcurrency();
-    if (m_concurrency > 1)
-        appendLog(tr("==== 并发 %1 路 ====").arg(m_concurrency));
+    m_logger->activate();   // 本会话首次真正开始转码 → 建文件并刷入启动阶段缓存的日志
+    logSession(LogLevel::Info, tr("队列开始：%1 个任务，并发 %2 路")
+                                   .arg(m_runRows.size()).arg(m_concurrency));
     setUiRunning(true);
     pump();
 }
@@ -490,7 +549,10 @@ void MainWindow::startJob(int row)
     worker->setBinaries(m_ffmpegPath, m_ffprobePath);
     m_active.insert(worker, row);
 
-    connect(worker, &FfmpegProcess::logLine, this, &MainWindow::appendLog);
+    // ffmpeg 的命令行与每行 stderr 归为 DEBUG，默认 INFO 视图下不显示，排错切 DEBUG 看
+    connect(worker, &FfmpegProcess::logLine, this, [this, row](const QString &l) {
+        logJob(row, LogLevel::Debug, l);
+    });
     connect(worker, &FfmpegProcess::progress, this, [this, worker](int pct) {
         const int r = m_active.value(worker, -1);
         if (r >= 0 && r < m_jobs.size()) {
@@ -505,10 +567,16 @@ void MainWindow::startJob(int row)
         // 已被取消的行保留「已取消」，不要覆盖成失败
         if (r >= 0 && m_jobs[r].status != JobStatus::Cancelled) {
             setRowStatus(r, ok ? JobStatus::Done : JobStatus::Failed);
-            // 转码成功后自动取消勾选：避免再次"开始"时被重复转码；
-            // 若选错格式想重转，重新勾选该视频即可。
-            if (ok)
+            const double secs = (QDateTime::currentMSecsSinceEpoch() - m_jobs[r].startedMs) / 1000.0;
+            if (ok) {
+                logJob(r, LogLevel::Info, tr("完成，用时 %1 秒").arg(secs, 0, 'f', 1));
+                // 转码成功后自动取消勾选：避免再次"开始"时被重复转码；
+                // 若选错格式想重转，重新勾选该视频即可。
                 setRowChecked(r, false);
+            } else {
+                logJob(r, LogLevel::Error, tr("转码失败（ffmpeg 退出码非 0），用时 %1 秒")
+                                               .arg(secs, 0, 'f', 1));
+            }
         }
         m_active.remove(worker);
         worker->deleteLater();
@@ -517,8 +585,9 @@ void MainWindow::startJob(int row)
     });
 
     setRowStatus(row, JobStatus::Running);
-    const auto &job = m_jobs[row];
-    appendLog(tr("→ 开始：%1  →  %2").arg(job.inputPath, job.outputPath));
+    auto &job = m_jobs[row];
+    job.startedMs = QDateTime::currentMSecsSinceEpoch();
+    logJob(row, LogLevel::Info, tr("开始 → %1").arg(job.outputPath));
     worker->start(job.inputPath, job.outputPath, job.settings);
 }
 
@@ -542,7 +611,8 @@ void MainWindow::pump()
             if (j.status == JobStatus::Pending) { anyPending = true; break; }
         if (!anyPending) {
             setUiRunning(false);
-            appendLog(tr("==== 队列处理完成 ===="));
+            logSession(LogLevel::Info, tr("队列处理完成"));
+            logSeparator();   // 收尾分隔：两条 === 之间即一次完整的队列运行
             m_overallBar->setValue(100);
         }
     }
@@ -584,7 +654,7 @@ void MainWindow::cancelQueue()
         w->cancel();   // 同步：其 finished 回调会在此期间发生
     }
 
-    appendLog(tr("✗ 已取消"));
+    logSession(LogLevel::Info, tr("用户取消，已终止进行中的任务"));
     m_cancelling = false;
     setUiRunning(false);
 }
@@ -606,9 +676,99 @@ void MainWindow::setRowStatus(int row, JobStatus st)
         if (auto *it = m_table->item(row, 2)) it->setText("100%");
 }
 
-void MainWindow::appendLog(const QString &line)
+// ---------- 日志 ----------
+void MainWindow::logSession(LogLevel lv, const QString &msg)
 {
-    m_log->appendPlainText(line);
+    addEntry({QDateTime::currentDateTime(), lv, -1, QString(), msg});
+}
+
+void MainWindow::logJob(int row, LogLevel lv, const QString &msg)
+{
+    if (row < 0 || row >= m_jobs.size()) { logSession(lv, msg); return; }
+    addEntry({QDateTime::currentDateTime(), lv, m_jobs[row].id,
+              QFileInfo(m_jobs[row].inputPath).fileName(), msg});
+}
+
+void MainWindow::logSeparator()
+{
+    // INFO 级、会话级；raw = 原样输出。与队列开始/完成同级，一并显示或一并隐藏。
+    LogEntry e{QDateTime::currentDateTime(), LogLevel::Info, -1, QString(),
+               QString(48, '='), /*raw=*/true};
+    addEntry(e);
+}
+
+void MainWindow::addEntry(const LogEntry &e)
+{
+    m_entries.append(e);
+    if (m_logger)
+        m_logger->writeLine(formatEntry(e, /*forFile=*/true));   // 文件记全量
+    if (m_log && entryVisible(e))                                 // 窗口按当前过滤增量显示
+        m_log->appendPlainText(formatEntry(e, /*forFile=*/false));
+}
+
+bool MainWindow::entryVisible(const LogEntry &e) const
+{
+    if (int(e.level) > int(m_visLevel))                 // 级别低于阈值不显示
+        return false;
+    if (m_scopeJobId >= 0 && e.jobId != m_scopeJobId)   // 单任务视图只看该任务
+        return false;
+    return true;
+}
+
+QString MainWindow::formatEntry(const LogEntry &e, bool forFile) const
+{
+    if (e.raw)
+        return e.text;                                  // 分隔行：原样，不加前缀
+    const QString ts  = e.ts.toString(forFile ? "yyyy-MM-dd HH:mm:ss.zzz" : "HH:mm:ss");
+    const QString lvl = Logger::levelName(e.level);
+    // 总览下带文件名前缀便于区分并发任务；单任务视图里文件名冗余但无妨
+    const QString tag = e.name.isEmpty() ? QString()
+                                         : QStringLiteral("[%1] ").arg(e.name);
+    return QStringLiteral("%1 [%2] %3%4").arg(ts, lvl, tag, e.text);
+}
+
+void MainWindow::rebuildLogView()
+{
+    if (!m_log) return;
+    m_log->clear();
+    for (const LogEntry &e : m_entries)
+        if (entryVisible(e))
+            m_log->appendPlainText(formatEntry(e, /*forFile=*/false));
+}
+
+void MainWindow::setLogScope(int jobId)
+{
+    if (jobId == m_scopeJobId) return;
+    m_scopeJobId = jobId;
+    if (m_logScopeLabel) {
+        QString name = tr("总览");
+        if (jobId >= 0)
+            for (const auto &j : m_jobs)
+                if (j.id == jobId) { name = QFileInfo(j.inputPath).fileName(); break; }
+        m_logScopeLabel->setText(name);
+    }
+    rebuildLogView();
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    logSession(LogLevel::Info, tr("ffconv 退出"));   // 会话结束标记由 Logger 析构写入
+    QMainWindow::closeEvent(e);
+}
+
+void MainWindow::configureLogging()
+{
+    QSettings st;
+    const int cur = qBound(0, st.value("logKeepCount", 10).toInt(), 255);
+    // QInputDialog 的整数框自带范围校验：无法输入 -1 或 256 这类非法值
+    bool ok = false;
+    const int n = QInputDialog::getInt(
+        this, tr("日志设置"),
+        tr("本地保留的日志文件个数（0 = 关闭日志写入，最多 255）：\n更改在下次启动生效。"),
+        cur, /*min=*/0, /*max=*/255, /*step=*/1, &ok);
+    if (!ok)
+        return;
+    st.setValue("logKeepCount", n);
 }
 
 void MainWindow::setUiRunning(bool running)
@@ -775,6 +935,9 @@ void MainWindow::createMenus()
         connect(act, &QAction::triggered, this, [this, code] { changeLanguage(code); });
         langGroup->addAction(act);
     }
+
+    // 设置 → 日志
+    settingsMenu->addAction(tr("日志…"), this, &MainWindow::configureLogging);
 
     // 帮助
     QMenu *helpMenu = menuBar()->addMenu(tr("帮助(&H)"));
