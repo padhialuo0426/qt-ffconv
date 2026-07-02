@@ -12,6 +12,10 @@
 #include <QFile>
 #include <QDateTime>
 
+#ifdef Q_OS_WIN
+#include <dxgi.h>   // 枚举显卡适配器读厂商 ID（detectDevices 用）
+#endif
+
 // 顶部信息常量
 #ifndef APP_VERSION
 #define APP_VERSION "0.0"
@@ -353,13 +357,27 @@ void MainWindow::detectDevices()
 #if defined(Q_OS_MACOS)
     m_hwPresent.insert(int(HwAccel::VideoToolbox));
 #elif defined(Q_OS_WIN)
-    // Windows 无 sysfs / 设备节点可读的厂商信息：设备层放行 Windows 相关后端，
-    // 由编码器层(ffmpeg -encoders)负责过滤——官方 ffmpeg 构建里有对应编码器
-    // 且驱动/显卡具备时才会真正可用。VAAPI/RKMPP/V4L2M2M 是 Linux-only，其编码器
-    // 不会出现在 Windows ffmpeg 中，编码器层自然挡掉，无需在此列出。
-    m_hwPresent.insert(int(HwAccel::QSV));     // Intel 核显
-    m_hwPresent.insert(int(HwAccel::NVENC));   // NVIDIA 独显
-    m_hwPresent.insert(int(HwAccel::AMF));     // AMD 显卡
+    // Windows 无 sysfs：改用 DXGI 枚举显卡适配器，读 VendorId（与 Linux 读 PCI
+    // vendor ID 对等，仅取这一个非标识性编号）。0x8086=Intel(QSV)、0x10DE=
+    // NVIDIA(NVENC)、0x1002=AMD(AMF)。编码器编进 ffmpeg ≠ 硬件在场——官方
+    // 构建无论有无 Intel 硬件都会编进 qsv 编码器，故必须在此按真实适配器过滤。
+    // DXGI 还会枚举不驱动显示器的计算卡；Microsoft WARP(0x1414)等软件适配器不匹配即忽略。
+    IDXGIFactory *factory = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory(IID_IDXGIFactory, reinterpret_cast<void **>(&factory)))) {
+        IDXGIAdapter *adapter = nullptr;
+        for (UINT i = 0; factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC desc{};
+            if (SUCCEEDED(adapter->GetDesc(&desc))) {
+                switch (desc.VendorId) {
+                case 0x8086: m_hwPresent.insert(int(HwAccel::QSV));   break;   // Intel
+                case 0x10DE: m_hwPresent.insert(int(HwAccel::NVENC)); break;   // NVIDIA
+                case 0x1002: m_hwPresent.insert(int(HwAccel::AMF));   break;   // AMD
+                }
+            }
+            adapter->Release();
+        }
+        factory->Release();
+    }
 #else
     // GPU 厂商：遍历 DRM render 节点读 vendor ID
     bool intel = false, amd = false, nvidia = false;

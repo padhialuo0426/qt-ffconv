@@ -18,9 +18,10 @@ add_executable(ffconv
     assets/icon.qrc          # 内嵌图标资源（窗口/任务栏图标，AUTORCC 处理）
 )
 
-# Windows：把 .ico 编进 exe，让文件管理器显示程序图标
+# Windows：把 .ico 编进 exe，让文件管理器显示程序图标；dxgi 用于枚举显卡厂商
 if(WIN32)
     target_sources(ffconv PRIVATE assets/app.rc)
+    target_link_libraries(ffconv PRIVATE dxgi dxguid)   # dxguid 提供 IID_IDXGIFactory
 endif()
 
 target_link_libraries(ffconv PRIVATE Qt6::Widgets)
