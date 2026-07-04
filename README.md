@@ -131,6 +131,10 @@ windeployqt --release build\win\ffconv.exe
 
 `debug` / `release` 二进制已嵌入 Qt 库 RPATH,直接运行;`release-system` 依赖系统 Qt 运行库。Linux 可 `cmake --install build/release-system --prefix ~/.local` 装入桌面菜单(带图标)。运行前确保 `ffmpeg` / `ffprobe` 在 PATH 中。
 
+## 界面风格
+
+**Linux 强制 Fusion 风格**:程序在 `main()` 里对 Linux 显式 `setStyle("Fusion")`。链接系统 Qt 时,桌面(如 KDE)会自动加载 Breeze 等平台风格,其 `QMenu` 子菜单箭头留白不足,会与「语言」等 CJK 文字的末字重叠;开发时链接的 `~/Qt` 官方版走 Fusion 无此问题。统一到 Fusion 后,发行版与开发外观一致、菜单排布正常。平台主题仍会提供系统深色调色板,故配色不变。Windows / macOS 走 `#ifdef Q_OS_LINUX` 之外,保留各自原生风格。
+
 ## 日志文件位置
 
 日志目录取 Qt 的 `QStandardPaths`(跨平台,三端无需改代码),子目录固定为 `ffconv/ffconv/`,文件名 `ffconv-<时间戳>.log`。`StateLocation` 为 Qt 6.7 新增,对更旧的 Qt 编译时自动退回 `AppLocalDataLocation`,故目录随 Qt 版本略有不同:
