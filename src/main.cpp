@@ -12,6 +12,14 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("ffconv");
     QApplication::setApplicationName("ffconv");
 
+    // Linux 上强制 Fusion 风格：系统 Qt 会加载 KDE Breeze 风格，其 QMenu 子菜单
+    // 箭头留白不足会与 CJK 文字（如「语言」的「言」）重叠。Fusion 渲染正常，且
+    // 与开发时的 ~/Qt 官方版外观一致；平台主题仍会提供系统深色调色板，故不影响配色。
+    // Windows/macOS 不受影响，保留各自原生风格。
+#ifdef Q_OS_LINUX
+    QApplication::setStyle(QStringLiteral("Fusion"));
+#endif
+
     // 窗口/任务栏图标：从内嵌资源按多尺寸组装，缩放时挑最接近的位图
     QIcon icon;
     for (int s : {16, 32, 48, 64, 128, 256})
